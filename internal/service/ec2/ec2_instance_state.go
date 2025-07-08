@@ -6,6 +6,7 @@ package ec2
 import (
 	"context"
 	"log"
+	"regexp"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -49,6 +50,18 @@ func resourceInstanceState() *schema.Resource {
 				ForceNew: true,
 				Required: true,
 			},
+			"instance_start_timeout": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "10m",
+				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^\d+[smh]$`), "must be a valid duration string (e.g., 10m, 1h, 30s)"),
+			},
+			"instance_stop_timeout": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "10m",
+				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^\d+[smh]$`), "must be a valid duration string (e.g., 10m, 1h, 30s)"),
+			},
 			names.AttrState: {
 				Type:         schema.TypeString,
 				Required:     true,
@@ -69,7 +82,17 @@ func resourceInstanceStateCreate(ctx context.Context, d *schema.ResourceData, me
 		return sdkdiag.AppendErrorf(diags, "waiting for EC2 Instance (%s) ready: %s", instanceID, err)
 	}
 
-	if err := updateInstanceState(ctx, conn, instanceID, string(instance.State.Name), d.Get(names.AttrState).(string), d.Get("force").(bool)); err != nil {
+	stopTimeout, err := parseTimeout(d.Get("instance_stop_timeout").(string))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "invalid instance_stop_timeout: %s", err)
+	}
+
+	startTimeout, err := parseTimeout(d.Get("instance_start_timeout").(string))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "invalid instance_start_timeout: %s", err)
+	}
+
+	if err := updateInstanceState(ctx, conn, instanceID, string(instance.State.Name), d.Get(names.AttrState).(string), d.Get("force").(bool), stopTimeout, startTimeout); err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 
@@ -96,6 +119,8 @@ func resourceInstanceStateRead(ctx context.Context, d *schema.ResourceData, meta
 
 	d.Set("force", d.Get("force").(bool))
 	d.Set(names.AttrInstanceID, d.Id())
+	d.Set("instance_start_timeout", d.Get("instance_start_timeout").(string))
+	d.Set("instance_stop_timeout", d.Get("instance_stop_timeout").(string))
 	d.Set(names.AttrState, state.Name)
 
 	return diags
@@ -112,7 +137,17 @@ func resourceInstanceStateUpdate(ctx context.Context, d *schema.ResourceData, me
 	if d.HasChange(names.AttrState) {
 		o, n := d.GetChange(names.AttrState)
 
-		if err := updateInstanceState(ctx, conn, d.Id(), o.(string), n.(string), d.Get("force").(bool)); err != nil {
+		stopTimeout, err := parseTimeout(d.Get("instance_stop_timeout").(string))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "invalid instance_stop_timeout: %s", err)
+		}
+
+		startTimeout, err := parseTimeout(d.Get("instance_start_timeout").(string))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "invalid instance_start_timeout: %s", err)
+		}
+
+		if err := updateInstanceState(ctx, conn, d.Id(), o.(string), n.(string), d.Get("force").(bool), stopTimeout, startTimeout); err != nil {
 			return sdkdiag.AppendFromErr(diags, err)
 		}
 	}
@@ -120,22 +155,31 @@ func resourceInstanceStateUpdate(ctx context.Context, d *schema.ResourceData, me
 	return append(diags, resourceInstanceStateRead(ctx, d, meta)...)
 }
 
-func updateInstanceState(ctx context.Context, conn *ec2.Client, id string, currentState string, configuredState string, force bool) error {
+func updateInstanceState(ctx context.Context, conn *ec2.Client, id string, currentState string, configuredState string, force bool, stopTimeout, startTimeout time.Duration) error {
 	if currentState == configuredState {
 		return nil
 	}
 
 	if configuredState == "stopped" {
-		if err := stopInstance(ctx, conn, id, force, instanceStopTimeout); err != nil {
+		if err := stopInstance(ctx, conn, id, force, stopTimeout); err != nil {
 			return err
 		}
 	}
 
 	if configuredState == "running" {
-		if err := startInstance(ctx, conn, id, false, instanceStartTimeout); err != nil {
+		if err := startInstance(ctx, conn, id, false, startTimeout); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// ParseTimeout parses a timeout string into a time.Duration
+func ParseTimeout(timeoutStr string) (time.Duration, error) {
+	return time.ParseDuration(timeoutStr)
+}
+
+func parseTimeout(timeoutStr string) (time.Duration, error) {
+	return ParseTimeout(timeoutStr)
 }
