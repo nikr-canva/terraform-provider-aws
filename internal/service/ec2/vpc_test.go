@@ -222,6 +222,11 @@ func TestAccVPC_tags_defaultAndIgnoreTags(t *testing.T) {
 					acctest.CheckVPCExists(ctx, resourceName, &vpc),
 					testAccCheckVPCUpdateTags(ctx, &vpc, nil, map[string]string{"defaultkey1": "defaultvalue1"}),
 				),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionCreate),
+					},
+				},
 				ExpectNonEmptyPlan: true,
 			},
 			{
@@ -229,14 +234,28 @@ func TestAccVPC_tags_defaultAndIgnoreTags(t *testing.T) {
 					acctest.ConfigDefaultAndIgnoreTagsKeyPrefixes1("defaultkey1", "defaultvalue1", "defaultkey"),
 					testAccVPCConfig_tags1(acctest.CtKey1, acctest.CtValue1),
 				),
-				PlanOnly: true,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+				},
 			},
 			{
 				Config: acctest.ConfigCompose(
 					acctest.ConfigDefaultAndIgnoreTagsKeys1("defaultkey1", "defaultvalue1"),
 					testAccVPCConfig_tags1(acctest.CtKey1, acctest.CtValue1),
 				),
-				PlanOnly: true,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+				},
 			},
 		},
 	})
@@ -259,15 +278,34 @@ func TestAccVPC_tags_ignoreTags(t *testing.T) {
 					acctest.CheckVPCExists(ctx, resourceName, &vpc),
 					testAccCheckVPCUpdateTags(ctx, &vpc, nil, map[string]string{"ignorekey1": "ignorevalue1"}),
 				),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionCreate),
+					},
+				},
 				ExpectNonEmptyPlan: true,
 			},
 			{
-				Config:   acctest.ConfigIgnoreTagsKeyPrefixes1("ignorekey") + testAccVPCConfig_tags1(acctest.CtKey1, acctest.CtValue1),
-				PlanOnly: true,
+				Config: acctest.ConfigIgnoreTagsKeyPrefixes1("ignorekey") + testAccVPCConfig_tags1(acctest.CtKey1, acctest.CtValue1),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+				},
 			},
 			{
-				Config:   acctest.ConfigIgnoreTagsKeys("ignorekey1") + testAccVPCConfig_tags1(acctest.CtKey1, acctest.CtValue1),
-				PlanOnly: true,
+				Config: acctest.ConfigIgnoreTagsKeys("ignorekey1") + testAccVPCConfig_tags1(acctest.CtKey1, acctest.CtValue1),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionNoop),
+					},
+				},
 			},
 		},
 	})
@@ -1007,7 +1045,7 @@ data "aws_availability_zone" "test" {
 resource "aws_vpc" "test" {
   assign_generated_ipv6_cidr_block     = true
   cidr_block                           = "10.1.0.0/16"
-  ipv6_cidr_block_network_border_group = %[2]t ? data.aws_availability_zone.test.network_border_group : data.aws_region.current.name
+  ipv6_cidr_block_network_border_group = %[2]t ? data.aws_availability_zone.test.network_border_group : data.aws_region.current.region
 
   tags = {
     Name = %[1]q
@@ -1100,7 +1138,7 @@ data "aws_region" "current" {}
 
 resource "aws_vpc_ipam" "test" {
   operating_regions {
-    region_name = data.aws_region.current.name
+    region_name = data.aws_region.current.region
   }
 
   tags = {
@@ -1111,7 +1149,7 @@ resource "aws_vpc_ipam" "test" {
 resource "aws_vpc_ipam_pool" "test" {
   address_family = "ipv4"
   ipam_scope_id  = aws_vpc_ipam.test.private_default_scope_id
-  locale         = data.aws_region.current.name
+  locale         = data.aws_region.current.region
 
   tags = {
     Name = %[1]q
@@ -1161,7 +1199,7 @@ data "aws_region" "current" {}
 
 resource "aws_vpc_ipam" "test" {
   operating_regions {
-    region_name = data.aws_region.current.name
+    region_name = data.aws_region.current.region
   }
 
   tags = {
@@ -1172,7 +1210,7 @@ resource "aws_vpc_ipam" "test" {
 resource "aws_vpc_ipam_pool" "test" {
   address_family = "ipv6"
   ipam_scope_id  = aws_vpc_ipam.test.public_default_scope_id
-  locale         = data.aws_region.current.name
+  locale         = data.aws_region.current.region
   aws_service    = "ec2"
 
   public_ip_source              = "amazon"
