@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2014, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package importer
@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	fwattr "github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -14,60 +15,10 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 
-func RegionalSingleParameterized(ctx context.Context, client AWSClient, request resource.ImportStateRequest, identitySpec *inttypes.Identity, importSpec *inttypes.FrameworkImport, response *resource.ImportStateResponse) {
-	regionPath := path.Root(names.AttrRegion)
-	attrPath := path.Root(identitySpec.IdentityAttribute)
-
-	var (
-		parameterVal string
-		regionVal    string
-	)
-	if parameterVal = request.ID; parameterVal != "" {
-		var regionAttr types.String
-		response.Diagnostics.Append(response.State.GetAttribute(ctx, regionPath, &regionAttr)...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-		regionVal = regionAttr.ValueString()
-	} else if identity := request.Identity; identity != nil {
-		response.Diagnostics.Append(validateAccountID(ctx, identity, client.AccountID(ctx))...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-
-		var regionAttr types.String
-		response.Diagnostics.Append(identity.GetAttribute(ctx, regionPath, &regionAttr)...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-		if !regionAttr.IsNull() {
-			regionVal = regionAttr.ValueString()
-		} else {
-			regionVal = client.Region(ctx)
-		}
-
-		var parameterAttr types.String
-		response.Diagnostics.Append(identity.GetAttribute(ctx, attrPath, &parameterAttr)...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-		parameterVal = parameterAttr.ValueString()
-	}
-
-	response.Diagnostics.Append(response.State.SetAttribute(ctx, regionPath, regionVal)...)
-	response.Diagnostics.Append(response.State.SetAttribute(ctx, attrPath, parameterVal)...)
-
-	accountID := client.AccountID(ctx)
-
-	if identity := response.Identity; identity != nil {
-		response.Diagnostics.Append(identity.SetAttribute(ctx, path.Root(names.AttrAccountID), accountID)...)
-		response.Diagnostics.Append(identity.SetAttribute(ctx, regionPath, regionVal)...)
-		response.Diagnostics.Append(identity.SetAttribute(ctx, attrPath, parameterVal)...)
-	}
-}
-
-func GlobalSingleParameterized(ctx context.Context, client AWSClient, request resource.ImportStateRequest, identitySpec *inttypes.Identity, importSpec *inttypes.FrameworkImport, response *resource.ImportStateResponse) {
-	attrPath := path.Root(identitySpec.IdentityAttribute)
+func SingleParameterized(ctx context.Context, client AWSClient, request resource.ImportStateRequest, identitySpec *inttypes.Identity, importSpec *inttypes.FrameworkImport, response *resource.ImportStateResponse) {
+	attr := identitySpec.Attributes[len(identitySpec.Attributes)-1]
+	identityPath := path.Root(attr.Name())
+	resourcePath := path.Root(attr.ResourceAttributeName())
 
 	parameterVal := request.ID
 
@@ -78,27 +29,29 @@ func GlobalSingleParameterized(ctx context.Context, client AWSClient, request re
 		}
 
 		var parameterAttr types.String
-		response.Diagnostics.Append(identity.GetAttribute(ctx, attrPath, &parameterAttr)...)
+		response.Diagnostics.Append(identity.GetAttribute(ctx, identityPath, &parameterAttr)...)
 		if response.Diagnostics.HasError() {
 			return
 		}
 		parameterVal = parameterAttr.ValueString()
 	}
 
-	response.Diagnostics.Append(response.State.SetAttribute(ctx, attrPath, parameterVal)...)
-
-	accountID := client.AccountID(ctx)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, resourcePath, parameterVal)...)
+	for _, attr := range identitySpec.IdentityDuplicateAttrs {
+		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(attr), parameterVal)...)
+	}
 
 	if identity := response.Identity; identity != nil {
-		response.Diagnostics.Append(identity.SetAttribute(ctx, path.Root(names.AttrAccountID), accountID)...)
-		response.Diagnostics.Append(identity.SetAttribute(ctx, attrPath, parameterVal)...)
+		response.Diagnostics.Append(identity.SetAttribute(ctx, path.Root(names.AttrAccountID), client.AccountID(ctx))...)
+		response.Diagnostics.Append(identity.SetAttribute(ctx, identityPath, parameterVal)...)
+	}
+
+	if !identitySpec.IsGlobalResource {
+		setRegionFromStateOrIdentity(ctx, client, request, response)
 	}
 }
 
-func RegionalMultipleParameterized(ctx context.Context, client AWSClient, request resource.ImportStateRequest, identitySpec *inttypes.Identity, importSpec *inttypes.FrameworkImport, response *resource.ImportStateResponse) {
-	regionPath := path.Root(names.AttrRegion)
-	var regionVal string
-
+func MultipleParameterized(ctx context.Context, client AWSClient, request resource.ImportStateRequest, identitySpec *inttypes.Identity, importSpec *inttypes.FrameworkImport, response *resource.ImportStateResponse) {
 	if request.ID != "" {
 		id, parts, err := importSpec.ImportID.Parse(request.ID)
 		if err != nil {
@@ -109,19 +62,30 @@ func RegionalMultipleParameterized(ctx context.Context, client AWSClient, reques
 			return
 		}
 
-		var regionAttr types.String
-		response.Diagnostics.Append(response.State.GetAttribute(ctx, regionPath, &regionAttr)...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-		regionVal = regionAttr.ValueString()
-
-		for attr, val := range parts {
-			attrPath := path.Root(attr)
-			response.Diagnostics.Append(response.State.SetAttribute(ctx, attrPath, val)...)
+		for resourceAttr, val := range parts {
+			resourcePath := path.Root(resourceAttr)
+			response.Diagnostics.Append(response.State.SetAttribute(ctx, resourcePath, val)...)
 
 			if identity := response.Identity; identity != nil {
-				response.Diagnostics.Append(identity.SetAttribute(ctx, attrPath, val)...)
+				var identityAttr string
+				for _, attr := range identitySpec.Attributes {
+					if attr.ResourceAttributeName() == resourceAttr {
+						identityAttr = attr.Name()
+						break
+					}
+				}
+				if identityAttr == "" {
+					response.Diagnostics.AddError(
+						"Unexpected Error",
+						"An unexpected error occurred while importing a resource. "+
+							"This is always an error in the provider. "+
+							"Please report the following to the provider developer:\n\n"+
+							fmt.Sprintf("No Resource Identity mapping found for attribute %q.", resourceAttr),
+					)
+					return
+				}
+				identityPath := path.Root(identityAttr)
+				response.Diagnostics.Append(identity.SetAttribute(ctx, identityPath, val)...)
 			}
 		}
 
@@ -134,36 +98,27 @@ func RegionalMultipleParameterized(ctx context.Context, client AWSClient, reques
 			return
 		}
 
-		var regionAttr types.String
-		response.Diagnostics.Append(identity.GetAttribute(ctx, regionPath, &regionAttr)...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-		if !regionAttr.IsNull() {
-			regionVal = regionAttr.ValueString()
-		} else {
-			regionVal = client.Region(ctx)
-		}
-		response.Diagnostics.Append(response.State.SetAttribute(ctx, regionPath, regionVal)...)
-
 		for _, attr := range identitySpec.Attributes {
-			switch attr.Name {
+			switch attr.Name() {
 			case names.AttrAccountID, names.AttrRegion:
 				// Do nothing
 
 			default:
-				attrPath := path.Root(attr.Name)
-				var parameterAttr types.String
-				response.Diagnostics.Append(identity.GetAttribute(ctx, attrPath, &parameterAttr)...)
+				identityPath := path.Root(attr.Name())
+				resourcePath := path.Root(attr.ResourceAttributeName())
+
+				var parameterAttr fwattr.Value
+				response.Diagnostics.Append(identity.GetAttribute(ctx, identityPath, &parameterAttr)...)
 				if response.Diagnostics.HasError() {
 					return
 				}
-				parameterVal := parameterAttr.ValueString()
 
-				response.Diagnostics.Append(response.State.SetAttribute(ctx, attrPath, parameterVal)...)
+				parameterVal := valueAsType(ctx, parameterAttr)
+
+				response.Diagnostics.Append(response.State.SetAttribute(ctx, resourcePath, parameterVal)...)
 
 				if identity := response.Identity; identity != nil {
-					response.Diagnostics.Append(identity.SetAttribute(ctx, attrPath, parameterVal)...)
+					response.Diagnostics.Append(identity.SetAttribute(ctx, identityPath, parameterVal)...)
 				}
 			}
 		}
@@ -186,78 +141,32 @@ func RegionalMultipleParameterized(ctx context.Context, client AWSClient, reques
 
 	if identity := response.Identity; identity != nil {
 		response.Diagnostics.Append(identity.SetAttribute(ctx, path.Root(names.AttrAccountID), client.AccountID(ctx))...)
-		response.Diagnostics.Append(identity.SetAttribute(ctx, regionPath, regionVal)...)
+	}
+
+	if !identitySpec.IsGlobalResource {
+		setRegionFromStateOrIdentity(ctx, client, request, response)
 	}
 }
 
-func GlobalMultipleParameterized(ctx context.Context, client AWSClient, request resource.ImportStateRequest, identitySpec *inttypes.Identity, importSpec *inttypes.FrameworkImport, response *resource.ImportStateResponse) {
-	if request.ID != "" {
-		id, parts, err := importSpec.ImportID.Parse(request.ID)
-		if err != nil {
-			response.Diagnostics.Append(InvalidResourceImportIDError(
-				"could not be parsed.\n\n" +
-					fmt.Sprintf("Value: %q\nError: %s", request.ID, err),
-			))
-			return
-		}
-
-		for attr, val := range parts {
-			attrPath := path.Root(attr)
-			response.Diagnostics.Append(response.State.SetAttribute(ctx, attrPath, val)...)
-
-			if identity := response.Identity; identity != nil {
-				response.Diagnostics.Append(identity.SetAttribute(ctx, attrPath, val)...)
-			}
-		}
-
-		if importSpec.SetIDAttr {
-			response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrID), id)...)
-		}
-	} else if identity := request.Identity; identity != nil {
-		response.Diagnostics.Append(validateAccountID(ctx, identity, client.AccountID(ctx))...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-
-		for _, attr := range identitySpec.Attributes {
-			switch attr.Name {
-			case names.AttrAccountID, names.AttrRegion:
-				// Do nothing
-
-			default:
-				attrPath := path.Root(attr.Name)
-				var parameterAttr types.String
-				response.Diagnostics.Append(identity.GetAttribute(ctx, attrPath, &parameterAttr)...)
-				if response.Diagnostics.HasError() {
-					return
-				}
-				parameterVal := parameterAttr.ValueString()
-
-				response.Diagnostics.Append(response.State.SetAttribute(ctx, attrPath, parameterVal)...)
-
-				if identity := response.Identity; identity != nil {
-					response.Diagnostics.Append(identity.SetAttribute(ctx, attrPath, parameterVal)...)
-				}
-			}
-		}
-
-		if importSpec.SetIDAttr {
-			if idCreator, ok := importSpec.ImportID.(inttypes.FrameworkImportIDCreator); ok {
-				response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrID), idCreator.Create(ctx, response.State))...)
-			} else {
-				response.Diagnostics.AddError(
-					"Unexpected Error",
-					"An unexpected error occurred while importing a resource. "+
-						"This is always an error in the provider. "+
-						"Please report the following to the provider developer:\n\n"+
-						"Import ID handler does not implement Creator, but needs to set \"id\" attribute.",
-				)
-				return
-			}
-		}
+func valueAsType(ctx context.Context, v fwattr.Value) any {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
 	}
 
-	if identity := response.Identity; identity != nil {
-		response.Diagnostics.Append(identity.SetAttribute(ctx, path.Root(names.AttrAccountID), client.AccountID(ctx))...)
+	switch v.Type(ctx) {
+	case types.StringType:
+		return v.(types.String).ValueString()
+	case types.Float64Type:
+		return v.(types.Float64).ValueFloat64()
+	case types.Int64Type:
+		return v.(types.Int64).ValueInt64()
+	case types.Int32Type:
+		return v.(types.Int32).ValueInt32()
+	case types.NumberType:
+		return v.(types.Number).ValueBigFloat()
+	case types.BoolType:
+		return v.(types.Bool).ValueBool()
+	default:
+		return nil
 	}
 }

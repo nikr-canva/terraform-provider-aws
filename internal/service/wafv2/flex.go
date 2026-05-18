@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2014, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package wafv2
@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
-	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 
@@ -556,7 +556,7 @@ func expandByteMatchStatement(l []any) *awstypes.ByteMatchStatement {
 		FieldToMatch:         expandFieldToMatch(m["field_to_match"].([]any)),
 		PositionalConstraint: awstypes.PositionalConstraint(m["positional_constraint"].(string)),
 		SearchString:         []byte(m["search_string"].(string)),
-		TextTransformations:  expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations:  expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -934,7 +934,7 @@ func expandRegexMatchStatement(l []any) *awstypes.RegexMatchStatement {
 	return &awstypes.RegexMatchStatement{
 		RegexString:         aws.String(m["regex_string"].(string)),
 		FieldToMatch:        expandFieldToMatch(m["field_to_match"].([]any)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -948,7 +948,7 @@ func expandRegexPatternSetReferenceStatement(l []any) *awstypes.RegexPatternSetR
 	return &awstypes.RegexPatternSetReferenceStatement{
 		ARN:                 aws.String(m[names.AttrARN].(string)),
 		FieldToMatch:        expandFieldToMatch(m["field_to_match"].([]any)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -963,7 +963,7 @@ func expandSizeConstraintStatement(l []any) *awstypes.SizeConstraintStatement {
 		ComparisonOperator:  awstypes.ComparisonOperator(m["comparison_operator"].(string)),
 		FieldToMatch:        expandFieldToMatch(m["field_to_match"].([]any)),
 		Size:                int64(m[names.AttrSize].(int)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -977,7 +977,7 @@ func expandSQLiMatchStatement(l []any) *awstypes.SqliMatchStatement {
 	return &awstypes.SqliMatchStatement{
 		FieldToMatch:        expandFieldToMatch(m["field_to_match"].([]any)),
 		SensitivityLevel:    awstypes.SensitivityLevel(m["sensitivity_level"].(string)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -990,7 +990,7 @@ func expandXSSMatchStatement(l []any) *awstypes.XssMatchStatement {
 
 	return &awstypes.XssMatchStatement{
 		FieldToMatch:        expandFieldToMatch(m["field_to_match"].([]any)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -1078,6 +1078,41 @@ func expandWebACLRulesJSON(rawRules string) ([]awstypes.Rule, error) {
 	return rules, nil
 }
 
+func expandRuleGroupRulesJSON(rawRules string) ([]awstypes.Rule, error) {
+	// Backwards compatibility.
+	if rawRules == "" {
+		return nil, errors.New("decoding JSON: unexpected end of JSON input")
+	}
+
+	var temp []any
+	err := tfjson.DecodeFromBytes([]byte(rawRules), &temp)
+	if err != nil {
+		return nil, fmt.Errorf("decoding JSON: %w", err)
+	}
+
+	for _, v := range temp {
+		walkRulesGroupJSON(reflect.ValueOf(v))
+	}
+
+	out, err := tfjson.EncodeToBytes(temp)
+	if err != nil {
+		return nil, err
+	}
+
+	var rules []awstypes.Rule
+	err = tfjson.DecodeFromBytes(out, &rules)
+	if err != nil {
+		return nil, err
+	}
+
+	for i, r := range rules {
+		if reflect.ValueOf(r).IsZero() {
+			return nil, fmt.Errorf("invalid Rule Group Rule supplied at index (%d)", i)
+		}
+	}
+	return rules, nil
+}
+
 func walkWebACLJSON(v reflect.Value) {
 	m := map[string][]struct {
 		key        string
@@ -1088,7 +1123,7 @@ func walkWebACLJSON(v reflect.Value) {
 		},
 	}
 
-	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
 		v = v.Elem()
 	}
 
@@ -1106,7 +1141,7 @@ func walkWebACLJSON(v reflect.Value) {
 					case reflect.Slice, reflect.Array:
 						switch reflect.ValueOf(va.outputType).Type().Elem().Kind() {
 						case reflect.Uint8:
-							base64String := itypes.Base64Encode([]byte(str.(string)))
+							base64String := inttypes.Base64Encode([]byte(str.(string)))
 							st[va.key] = base64String
 						default:
 						}
@@ -1120,6 +1155,53 @@ func walkWebACLJSON(v reflect.Value) {
 	case reflect.Array, reflect.Slice:
 		for i := range v.Len() {
 			walkWebACLJSON(v.Index(i))
+		}
+	default:
+	}
+}
+
+func walkRulesGroupJSON(v reflect.Value) {
+	m := map[string][]struct {
+		key        string
+		outputType any
+	}{
+		"ByteMatchStatement": {
+			{key: "SearchString", outputType: []byte{}},
+		},
+	}
+
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+
+	switch v.Kind() {
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			if val, ok := m[k.String()]; ok {
+				st := v.MapIndex(k).Interface().(map[string]any)
+				for _, va := range val {
+					if st[va.key] == nil {
+						continue
+					}
+					str := st[va.key]
+					switch reflect.ValueOf(va.outputType).Kind() {
+					case reflect.Slice, reflect.Array:
+						switch reflect.ValueOf(va.outputType).Type().Elem().Kind() {
+						case reflect.Uint8:
+							base64String := inttypes.Base64Encode([]byte(str.(string)))
+							st[va.key] = base64String
+						default:
+						}
+					default:
+					}
+				}
+			} else {
+				walkRulesGroupJSON(v.MapIndex(k))
+			}
+		}
+	case reflect.Array, reflect.Slice:
+		for i := range v.Len() {
+			walkRulesGroupJSON(v.Index(i))
 		}
 	default:
 	}
@@ -1688,7 +1770,7 @@ func expandRateLimitCookie(l []any) *awstypes.RateLimitCookie {
 
 	return &awstypes.RateLimitCookie{
 		Name:                aws.String(m[names.AttrName].(string)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -1700,7 +1782,7 @@ func expandRateLimitHeader(l []any) *awstypes.RateLimitHeader {
 
 	return &awstypes.RateLimitHeader{
 		Name:                aws.String(m[names.AttrName].(string)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -1742,7 +1824,7 @@ func expandRateLimitQueryArgument(l []any) *awstypes.RateLimitQueryArgument {
 
 	return &awstypes.RateLimitQueryArgument{
 		Name:                aws.String(m[names.AttrName].(string)),
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -1752,7 +1834,7 @@ func expandRateLimitQueryString(l []any) *awstypes.RateLimitQueryString {
 	}
 	m := l[0].(map[string]any)
 	return &awstypes.RateLimitQueryString{
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -1762,7 +1844,7 @@ func expandRateLimitURIPath(l []any) *awstypes.RateLimitUriPath {
 	}
 	m := l[0].(map[string]any)
 	return &awstypes.RateLimitUriPath{
-		TextTransformations: expandTextTransformations(m["text_transformation"].(*schema.Set).List()),
+		TextTransformations: expandTextTransformations(m[attrTextTransformation].(*schema.Set).List()),
 	}
 }
 
@@ -1774,6 +1856,9 @@ func expandRateBasedStatementCustomKeys(l []any) []awstypes.RateBasedStatementCu
 	for _, ck := range l {
 		r := awstypes.RateBasedStatementCustomKey{}
 		m := ck.(map[string]any)
+		if v, ok := m["asn"]; ok && len(v.([]any)) > 0 {
+			r.ASN = &awstypes.RateLimitAsn{}
+		}
 		if v, ok := m["cookie"]; ok {
 			r.Cookie = expandRateLimitCookie(v.([]any))
 		}
@@ -2335,7 +2420,7 @@ func flattenByteMatchStatement(b *awstypes.ByteMatchStatement) any {
 		"field_to_match":        flattenFieldToMatch(b.FieldToMatch),
 		"positional_constraint": b.PositionalConstraint,
 		"search_string":         string(b.SearchString),
-		"text_transformation":   flattenTextTransformations(b.TextTransformations),
+		attrTextTransformation:  flattenTextTransformations(b.TextTransformations),
 	}
 
 	return []any{m}
@@ -2454,8 +2539,8 @@ func flattenCookiesMatchPattern(c *awstypes.CookieMatchPattern) any {
 	}
 
 	m := map[string]any{
-		"included_cookies": aws.StringSlice(c.IncludedCookies),
-		"excluded_cookies": aws.StringSlice(c.ExcludedCookies),
+		"included_cookies": c.IncludedCookies,
+		"excluded_cookies": c.ExcludedCookies,
 	}
 
 	if c.All != nil {
@@ -2649,9 +2734,9 @@ func flattenRegexMatchStatement(r *awstypes.RegexMatchStatement) any {
 	}
 
 	m := map[string]any{
-		"regex_string":        aws.ToString(r.RegexString),
-		"field_to_match":      flattenFieldToMatch(r.FieldToMatch),
-		"text_transformation": flattenTextTransformations(r.TextTransformations),
+		"regex_string":         aws.ToString(r.RegexString),
+		"field_to_match":       flattenFieldToMatch(r.FieldToMatch),
+		attrTextTransformation: flattenTextTransformations(r.TextTransformations),
 	}
 
 	return []any{m}
@@ -2663,9 +2748,9 @@ func flattenRegexPatternSetReferenceStatement(r *awstypes.RegexPatternSetReferen
 	}
 
 	m := map[string]any{
-		names.AttrARN:         aws.ToString(r.ARN),
-		"field_to_match":      flattenFieldToMatch(r.FieldToMatch),
-		"text_transformation": flattenTextTransformations(r.TextTransformations),
+		names.AttrARN:          aws.ToString(r.ARN),
+		"field_to_match":       flattenFieldToMatch(r.FieldToMatch),
+		attrTextTransformation: flattenTextTransformations(r.TextTransformations),
 	}
 
 	return []any{m}
@@ -2677,10 +2762,10 @@ func flattenSizeConstraintStatement(s *awstypes.SizeConstraintStatement) any {
 	}
 
 	m := map[string]any{
-		"comparison_operator": s.ComparisonOperator,
-		"field_to_match":      flattenFieldToMatch(s.FieldToMatch),
-		names.AttrSize:        s.Size,
-		"text_transformation": flattenTextTransformations(s.TextTransformations),
+		"comparison_operator":  s.ComparisonOperator,
+		"field_to_match":       flattenFieldToMatch(s.FieldToMatch),
+		names.AttrSize:         s.Size,
+		attrTextTransformation: flattenTextTransformations(s.TextTransformations),
 	}
 
 	return []any{m}
@@ -2692,9 +2777,9 @@ func flattenSQLiMatchStatement(s *awstypes.SqliMatchStatement) any {
 	}
 
 	m := map[string]any{
-		"field_to_match":      flattenFieldToMatch(s.FieldToMatch),
-		"sensitivity_level":   s.SensitivityLevel,
-		"text_transformation": flattenTextTransformations(s.TextTransformations),
+		"field_to_match":       flattenFieldToMatch(s.FieldToMatch),
+		"sensitivity_level":    s.SensitivityLevel,
+		attrTextTransformation: flattenTextTransformations(s.TextTransformations),
 	}
 
 	return []any{m}
@@ -2706,8 +2791,8 @@ func flattenXSSMatchStatement(s *awstypes.XssMatchStatement) any {
 	}
 
 	m := map[string]any{
-		"field_to_match":      flattenFieldToMatch(s.FieldToMatch),
-		"text_transformation": flattenTextTransformations(s.TextTransformations),
+		"field_to_match":       flattenFieldToMatch(s.FieldToMatch),
+		attrTextTransformation: flattenTextTransformations(s.TextTransformations),
 	}
 
 	return []any{m}
@@ -3246,6 +3331,7 @@ func flattenHeader(apiObject *awstypes.ResponseInspectionHeader) []any {
 
 	m := map[string]any{
 		"failure_values": apiObject.FailureValues,
+		names.AttrName:   apiObject.Name,
 		"success_values": apiObject.SuccessValues,
 	}
 
@@ -3285,8 +3371,8 @@ func flattenRateLimitCookie(apiObject *awstypes.RateLimitCookie) []any {
 	}
 	return []any{
 		map[string]any{
-			names.AttrName:        aws.ToString(apiObject.Name),
-			"text_transformation": flattenTextTransformations(apiObject.TextTransformations),
+			names.AttrName:         aws.ToString(apiObject.Name),
+			attrTextTransformation: flattenTextTransformations(apiObject.TextTransformations),
 		},
 	}
 }
@@ -3297,8 +3383,8 @@ func flattenRateLimitHeader(apiObject *awstypes.RateLimitHeader) []any {
 	}
 	return []any{
 		map[string]any{
-			names.AttrName:        aws.ToString(apiObject.Name),
-			"text_transformation": flattenTextTransformations(apiObject.TextTransformations),
+			names.AttrName:         aws.ToString(apiObject.Name),
+			attrTextTransformation: flattenTextTransformations(apiObject.TextTransformations),
 		},
 	}
 }
@@ -3342,8 +3428,8 @@ func flattenRateLimitQueryArgument(apiObject *awstypes.RateLimitQueryArgument) [
 	}
 	return []any{
 		map[string]any{
-			names.AttrName:        aws.ToString(apiObject.Name),
-			"text_transformation": flattenTextTransformations(apiObject.TextTransformations),
+			names.AttrName:         aws.ToString(apiObject.Name),
+			attrTextTransformation: flattenTextTransformations(apiObject.TextTransformations),
 		},
 	}
 }
@@ -3354,7 +3440,7 @@ func flattenRateLimitQueryString(apiObject *awstypes.RateLimitQueryString) []any
 	}
 	return []any{
 		map[string]any{
-			"text_transformation": flattenTextTransformations(apiObject.TextTransformations),
+			attrTextTransformation: flattenTextTransformations(apiObject.TextTransformations),
 		},
 	}
 }
@@ -3365,7 +3451,7 @@ func flattenRateLimitURIPath(apiObject *awstypes.RateLimitUriPath) []any {
 	}
 	return []any{
 		map[string]any{
-			"text_transformation": flattenTextTransformations(apiObject.TextTransformations),
+			attrTextTransformation: flattenTextTransformations(apiObject.TextTransformations),
 		},
 	}
 }
@@ -3379,6 +3465,11 @@ func flattenRateBasedStatementCustomKeys(apiObject []awstypes.RateBasedStatement
 	for i, o := range apiObject {
 		tfMap := map[string]any{}
 
+		if o.ASN != nil {
+			tfMap["asn"] = []any{
+				map[string]any{},
+			}
+		}
 		if o.Cookie != nil {
 			tfMap["cookie"] = flattenRateLimitCookie(o.Cookie)
 		}

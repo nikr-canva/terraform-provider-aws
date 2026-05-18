@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2014, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package transfer_test
@@ -23,6 +23,15 @@ func TestAccTransfer_serial(t *testing.T) {
 			acctest.CtBasic:      testAccAgreement_basic,
 			acctest.CtDisappears: testAccAgreement_disappears,
 			"tags":               testAccAgreement_tags,
+		},
+		"HostKey": {
+			acctest.CtBasic:       testAccHostKey_basic,
+			acctest.CtDisappears:  testAccHostKey_disappears,
+			"tags":                testAccHostKey_tags,
+			"Description":         testAccHostKey_description,
+			"UpdateHostKeyBody":   testAccHostKey_updateHostKeyBody,
+			"HostKeyBodyWO":       testAccHostKey_hostKeyBodyWO,
+			"UpdateHostKeyBodyWO": testAccHostKey_updateHostKeyBodyWO,
 		},
 		"Server": {
 			acctest.CtBasic:                   testAccServer_basic,
@@ -59,6 +68,23 @@ func TestAccTransfer_serial(t *testing.T) {
 			"VPCEndpointID":                                          testAccServer_vpcEndpointID,
 			"VPCSecurityGroupIDs":                                    testAccServer_vpcSecurityGroupIDs,
 			"Workflow":                                               testAccServer_workflowDetails,
+		},
+		"Connector": {
+			acctest.CtBasic:      testAccConnector_basic,
+			"sftpConfig":         testAccConnector_sftpConfig,
+			"securityPolicyName": testAccConnector_securityPolicyName,
+			acctest.CtDisappears: testAccConnector_disappears,
+			"egressConfig":       testAccConnector_egressConfig,
+			"egressConfigUpdate": testAccConnector_egressConfigUpdate,
+			"tags":               testAccConnector_tags,
+		},
+		"Workflow": {
+			acctest.CtBasic:      testAccWorkflow_basic,
+			"onExceptionSteps":   testAccWorkflow_onExceptionSteps,
+			"description":        testAccWorkflow_description,
+			"tags":               testAccWorkflow_tags,
+			acctest.CtDisappears: testAccWorkflow_disappears,
+			"allSteps":           testAccWorkflow_allSteps,
 		},
 		"SSHKey": {
 			acctest.CtBasic:      testAccSSHKey_basic,
